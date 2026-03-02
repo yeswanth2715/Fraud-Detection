@@ -1,78 +1,149 @@
-import sys
-import os
-sys.path.append(os.path.abspath("."))
-
 import streamlit as st
 import pandas as pd
-import joblib
-import json
+import numpy as np
 import plotly.express as px
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
+import plotly.graph_objects as go
+from sklearn.metrics import confusion_matrix, classification_report
+import joblib
 
-# ------------------------
-# PATH FIX (No Errno 2)
-# ------------------------
+st.set_page_config(page_title="Goldilocks Model Performance", layout="wide")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
-
-MODEL_PATH = os.path.join(PROJECT_ROOT, "models/model.joblib")
-METRICS_PATH = os.path.join(PROJECT_ROOT, "metrics/metrics.json")
-DATA_PATH = os.path.join(PROJECT_ROOT, "data/User0_credit_card_transactions.csv")
-
-st.set_page_config(layout="wide")
 st.title("🥇 Goldilocks Model Performance")
 
-# ------------------------
-# Load Model + Data
-# ------------------------
+# ==============================
+# Load Data
+# ==============================
 
-model = joblib.load(MODEL_PATH)
-df = pd.read_csv(DATA_PATH)
+@st.cache_data
+def load_data():
+    return pd.read_csv("finance-risk-engine/data/User0_credit_card_transactions.csv")  # adjust if needed
 
-X = df.drop(columns=["is_fraud"])
-y_true = df["is_fraud"]
+df = load_data()
 
-# ------------------------
+st.write("Available Columns:", df.columns.tolist())
+
+# ==============================
+# Detect Target Column
+# ==============================
+
+possible_targets = ["is_fraud", "fraud", "Class", "target", "label"]
+
+target_column = None
+for col in possible_targets:
+    if col in df.columns:
+        target_column = col
+        break
+
+if target_column is None:
+    st.error("No fraud target column found in dataset.")
+    st.stop()
+
+X = df.drop(columns=[target_column])
+y = df[target_column]
+
+# ==============================
+# Load Model
+# ==============================
+
+@st.cache_resource
+def load_model():
+    return joblib.load("models/model.joblib")
+
+model = load_model()
+
+# ==============================
+# Predict Probabilities
+# ==============================
+
+y_prob = model.predict_proba(X)[:, 1]
+
+# ==============================
 # Threshold Slider
-# ------------------------
+# ==============================
 
-threshold = st.slider("Adjust Decision Threshold", 0.0, 1.0, 0.5, 0.01)
+st.sidebar.header("⚙️ Threshold Tuning")
 
-probs = model.predict_proba(X)[:, 1]
-y_pred = (probs >= threshold).astype(int)
+threshold = st.sidebar.slider(
+    "Fraud Probability Threshold",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.5,
+    step=0.01
+)
 
-# ------------------------
-# Metrics
-# ------------------------
+y_pred = (y_prob >= threshold).astype(int)
 
-accuracy = (y_pred == y_true).mean()
-precision = ((y_pred & y_true).sum()) / max(y_pred.sum(), 1)
-recall = ((y_pred & y_true).sum()) / max(y_true.sum(), 1)
-f1 = 2 * precision * recall / max((precision + recall), 1e-9)
+# ==============================
+# KPI Section
+# ==============================
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Accuracy", f"{accuracy:.2%}")
-col2.metric("Precision", f"{precision:.2%}")
-col3.metric("Recall", f"{recall:.2%}")
-col4.metric("F1 Score", f"{f1:.2%}")
+col1, col2, col3 = st.columns(3)
 
-st.success("🏆 Goldilocks Model: Balanced Precision & Recall")
+fraud_rate = (y.sum() / len(y)) * 100
+predicted_fraud_rate = (y_pred.sum() / len(y_pred)) * 100
+accuracy = (y_pred == y).mean() * 100
 
-st.divider()
+col1.metric("Actual Fraud Rate %", f"{fraud_rate:.2f}%")
+col2.metric("Predicted Fraud Rate %", f"{predicted_fraud_rate:.2f}%")
+col3.metric("Model Accuracy %", f"{accuracy:.2f}%")
 
-# ------------------------
+# ==============================
 # Confusion Matrix
-# ------------------------
+# ==============================
 
-cm = confusion_matrix(y_true, y_pred)
+st.subheader("Confusion Matrix")
 
-fig, ax = plt.subplots()
-sns.heatmap(cm, annot=True, fmt="d", cmap="Reds", ax=ax)
-ax.set_xlabel("Predicted")
-ax.set_ylabel("Actual")
-ax.set_title("Confusion Matrix")
+cm = confusion_matrix(y, y_pred)
 
-st.pyplot(fig)
+fig_cm = px.imshow(
+    cm,
+    text_auto=True,
+    labels=dict(x="Predicted", y="Actual"),
+    x=["Non-Fraud", "Fraud"],
+    y=["Non-Fraud", "Fraud"],
+    color_continuous_scale="Blues"
+)
+
+st.plotly_chart(fig_cm, use_container_width=True)
+
+# ==============================
+# Classification Report
+# ==============================
+
+st.subheader("Classification Report")
+
+report = classification_report(y, y_pred, output_dict=True)
+report_df = pd.DataFrame(report).transpose()
+
+st.dataframe(report_df)
+
+# ==============================
+# Probability Distribution
+# ==============================
+
+st.subheader("Fraud Probability Distribution")
+
+fig_dist = px.histogram(
+    y_prob,
+    nbins=50,
+    title="Distribution of Fraud Probabilities",
+    labels={"value": "Fraud Probability"}
+)
+
+st.plotly_chart(fig_dist, use_container_width=True)
+
+# ==============================
+# Goldilocks Highlight
+# ==============================
+
+st.markdown("---")
+st.success(
+    f"""
+    🥇 **Goldilocks Threshold Active:** {threshold}
+
+    This threshold balances:
+    - False Positives
+    - False Negatives
+    - Business Risk
+    """
+)
