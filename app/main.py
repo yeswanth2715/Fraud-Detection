@@ -11,3 +11,7 @@ app = FastAPI(title="Finance Risk Engine")
 
 # Include API routes
 app.include_router(router)
+
+@app.get("/")
+def root():
+    return {"message": "Fraud Detection API is Live 🚀"}
