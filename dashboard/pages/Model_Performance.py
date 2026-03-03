@@ -1,162 +1,127 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
-from sklearn.metrics import confusion_matrix, classification_report
-import joblib
 import os
 
-st.set_page_config(page_title="Goldilocks Model Performance", layout="wide")
+st.set_page_config(page_title="Executive Overview", layout="wide")
 
-st.title("🥇 Goldilocks Model Performance")
+st.title("🏢 Fraud Intelligence Executive Dashboard")
 
-# ==========================================
-# SAFE DATA LOADING (DEPLOYMENT READY)
-# ==========================================
+# =====================================================
+# LOAD DATA (SAFE FOR DEPLOYMENT)
+# =====================================================
 
 @st.cache_data
 def load_data():
     file_path = os.path.join("data", "User0_credit_card_transactions.csv")
     if not os.path.exists(file_path):
-        st.error(f"Data file not found at {file_path}")
+        st.error("Dataset not found in data/ folder.")
         st.stop()
     return pd.read_csv(file_path)
 
 df = load_data()
 
-st.write("Available Columns:", df.columns.tolist())
+# =====================================================
+# AUTO DETECT IMPORTANT COLUMNS
+# =====================================================
 
-# ==========================================
-# TARGET COLUMN DETECTION
-# ==========================================
+# Fraud column detection
+possible_fraud_cols = ["Is Fraud?", "is_fraud", "fraud", "Class", "target"]
+fraud_col = next((col for col in possible_fraud_cols if col in df.columns), None)
 
-possible_targets = ["is_fraud", "fraud", "Class", "target", "label"]
+# Amount column detection
+possible_amount_cols = ["Amount", "amount", "transaction_amount"]
+amount_col = next((col for col in possible_amount_cols if col in df.columns), None)
 
-target_column = None
-for col in possible_targets:
-    if col in df.columns:
-        target_column = col
-        break
+# Date column detection
+possible_date_cols = ["Date", "date", "timestamp", "transaction_date"]
+date_col = next((col for col in possible_date_cols if col in df.columns), None)
 
-if target_column is None:
-    st.error("No fraud target column found in dataset.")
-    st.stop()
+# Risk column detection (optional)
+possible_risk_cols = ["risk_level", "Risk", "prediction"]
+risk_col = next((col for col in possible_risk_cols if col in df.columns), None)
 
-X = df.drop(columns=[target_column])
-y = df[target_column]
+# Convert fraud column if Yes/No
+if fraud_col and df[fraud_col].dtype == object:
+    df[fraud_col] = df[fraud_col].map({"Yes": 1, "No": 0})
 
-# ==========================================
-# SAFE MODEL LOADING
-# ==========================================
+# =====================================================
+# KPI CALCULATIONS
+# =====================================================
 
-@st.cache_resource
-def load_model():
-    model_path = os.path.join("models", "model.joblib")
-    if not os.path.exists(model_path):
-        st.error(f"Model file not found at {model_path}")
-        st.stop()
-    return joblib.load(model_path)
+total_tx = len(df)
 
-model = load_model()
+fraud_tx = df[fraud_col].sum() if fraud_col else 0
+fraud_rate = (fraud_tx / total_tx) * 100 if fraud_col else 0
 
-# ==========================================
-# PREDICT PROBABILITIES
-# ==========================================
+avg_amount = df[amount_col].mean() if amount_col else 0
 
-if hasattr(model, "predict_proba"):
-    y_prob = model.predict_proba(X)[:, 1]
-else:
-    st.error("Model does not support predict_proba.")
-    st.stop()
+high_risk_tx = 0
+if risk_col:
+    high_risk_tx = len(df[df[risk_col] == "HIGH"])
 
-# ==========================================
-# THRESHOLD SLIDER
-# ==========================================
+# =====================================================
+# KPI DISPLAY (POWERBI STYLE)
+# =====================================================
 
-st.sidebar.header("⚙️ Threshold Tuning")
+st.markdown("### Key Business Metrics")
 
-threshold = st.sidebar.slider(
-    "Fraud Probability Threshold",
-    0.0,
-    1.0,
-    0.5,
-    0.01
-)
+col1, col2, col3, col4, col5 = st.columns(5)
 
-y_pred = (y_prob >= threshold).astype(int)
-
-# ==========================================
-# KPI SECTION
-# ==========================================
-
-col1, col2, col3 = st.columns(3)
-
-actual_fraud_rate = (y.sum() / len(y)) * 100
-predicted_fraud_rate = (y_pred.sum() / len(y_pred)) * 100
-accuracy = (y_pred == y).mean() * 100
-
-col1.metric("Actual Fraud Rate %", f"{actual_fraud_rate:.2f}%")
-col2.metric("Predicted Fraud Rate %", f"{predicted_fraud_rate:.2f}%")
-col3.metric("Model Accuracy %", f"{accuracy:.2f}%")
-
-# ==========================================
-# CONFUSION MATRIX
-# ==========================================
-
-st.subheader("Confusion Matrix")
-
-cm = confusion_matrix(y, y_pred)
-
-fig_cm = px.imshow(
-    cm,
-    text_auto=True,
-    labels=dict(x="Predicted", y="Actual"),
-    x=["Non-Fraud", "Fraud"],
-    y=["Non-Fraud", "Fraud"],
-    color_continuous_scale="Blues"
-)
-
-st.plotly_chart(fig_cm, use_container_width=True)
-
-# ==========================================
-# CLASSIFICATION REPORT
-# ==========================================
-
-st.subheader("Classification Report")
-
-report = classification_report(y, y_pred, output_dict=True)
-report_df = pd.DataFrame(report).transpose()
-
-st.dataframe(report_df, use_container_width=True)
-
-# ==========================================
-# PROBABILITY DISTRIBUTION
-# ==========================================
-
-st.subheader("Fraud Probability Distribution")
-
-fig_dist = px.histogram(
-    y_prob,
-    nbins=50,
-    title="Distribution of Fraud Probabilities",
-    labels={"value": "Fraud Probability"}
-)
-
-st.plotly_chart(fig_dist, use_container_width=True)
-
-# ==========================================
-# GOLDILOCKS HIGHLIGHT
-# ==========================================
+col1.metric("Total Transactions", f"{total_tx:,}")
+col2.metric("Fraud Transactions", f"{int(fraud_tx):,}")
+col3.metric("Fraud Rate %", f"{fraud_rate:.2f}%")
+col4.metric("High Risk Transactions", f"{high_risk_tx:,}")
+col5.metric("Avg Transaction Amount", f"${avg_amount:,.2f}")
 
 st.markdown("---")
 
-st.success(
-    f"""
-    🥇 **Goldilocks Threshold Active:** {threshold}
+# =====================================================
+# FRAUD TREND OVER TIME
+# =====================================================
 
-    This threshold balances:
-    • False Positives  
-    • False Negatives  
-    • Business Risk  
-    """
-)
+if date_col and fraud_col:
+    st.subheader("📈 Fraud Trend Over Time")
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    trend_df = df.groupby(df[date_col].dt.date)[fraud_col].sum().reset_index()
+
+    fig_trend = px.line(
+        trend_df,
+        x=date_col,
+        y=fraud_col,
+        markers=True,
+        title="Daily Fraud Count",
+    )
+
+    fig_trend.update_layout(height=400)
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+# =====================================================
+# RISK DISTRIBUTION
+# =====================================================
+
+if risk_col:
+    st.subheader("🍩 Risk Level Distribution")
+
+    risk_counts = df[risk_col].value_counts().reset_index()
+    risk_counts.columns = ["Risk Level", "Count"]
+
+    fig_risk = px.pie(
+        risk_counts,
+        names="Risk Level",
+        values="Count",
+        hole=0.5,
+        color="Risk Level",
+        color_discrete_map={
+            "LOW": "#2ca02c",
+            "MEDIUM": "#ff7f0e",
+            "HIGH": "#d62728"
+        }
+    )
+
+    fig_risk.update_layout(height=400)
+    st.plotly_chart(fig_risk, use_container_width=True)
+
+st.markdown("---")
+st.success("Executive view showing high-level fraud intelligence metrics.")
