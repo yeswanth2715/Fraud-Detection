@@ -17,33 +17,46 @@ def load_data():
     if not os.path.exists(file_path):
         st.error("Dataset not found in data/ folder.")
         st.stop()
-    return pd.read_csv(file_path)
+    
+    df = pd.read_csv(file_path)
+    
+    # -------------------------------------------------
+    # DATA CLEANING & TYPE CONVERSION
+    # -------------------------------------------------
+    
+    # 1. Auto Detect Columns
+    fraud_cols = ["Is Fraud?", "is_fraud", "fraud", "Class", "target"]
+    amt_cols = ["Amount", "amount", "transaction_amount"]
+    date_cols = ["Date", "date", "timestamp", "transaction_date"]
+    
+    f_col = next((c for c in fraud_cols if c in df.columns), None)
+    a_col = next((c for c in amt_cols if c in df.columns), None)
+    d_col = next((c for c in date_cols if c in df.columns), None)
 
-df = load_data()
+    # 2. Fix Amount (The Error Fix)
+    if a_col:
+        # Remove '$' and ',' then convert to numeric
+        df[a_col] = df[a_col].replace(r'[\$,]', '', regex=True)
+        df[a_col] = pd.to_numeric(df[a_col], errors='coerce').fillna(0)
 
-# =====================================================
-# AUTO DETECT IMPORTANT COLUMNS
-# =====================================================
+    # 3. Fix Fraud column if it's Yes/No or String
+    if f_col:
+        if df[f_col].dtype == object:
+            df[f_col] = df[f_col].map({"Yes": 1, "No": 0, "1": 1, "0": 0})
+        df[f_col] = df[f_col].fillna(0).astype(int)
 
-# Fraud column detection
-possible_fraud_cols = ["Is Fraud?", "is_fraud", "fraud", "Class", "target"]
-fraud_col = next((col for col in possible_fraud_cols if col in df.columns), None)
+    # 4. Fix Date Column
+    if d_col:
+        df[d_col] = pd.to_datetime(df[d_col], errors="coerce")
 
-# Amount column detection
-possible_amount_cols = ["Amount", "amount", "transaction_amount"]
-amount_col = next((col for col in possible_amount_cols if col in df.columns), None)
+    return df, f_col, a_col, d_col
 
-# Date column detection
-possible_date_cols = ["Date", "date", "timestamp", "transaction_date"]
-date_col = next((col for col in possible_date_cols if col in df.columns), None)
+# Initialize Data
+df, fraud_col, amount_col, date_col = load_data()
 
-# Risk column detection (optional)
+# Risk column detection (stays outside cache as it's simpler)
 possible_risk_cols = ["risk_level", "Risk", "prediction"]
 risk_col = next((col for col in possible_risk_cols if col in df.columns), None)
-
-# Convert fraud column if Yes/No
-if fraud_col and df[fraud_col].dtype == object:
-    df[fraud_col] = df[fraud_col].map({"Yes": 1, "No": 0})
 
 # =====================================================
 # KPI CALCULATIONS
@@ -51,14 +64,17 @@ if fraud_col and df[fraud_col].dtype == object:
 
 total_tx = len(df)
 
+# Calculate Fraud Metrics
 fraud_tx = df[fraud_col].sum() if fraud_col else 0
-fraud_rate = (fraud_tx / total_tx) * 100 if fraud_col else 0
+fraud_rate = (fraud_tx / total_tx) * 100 if total_tx > 0 else 0
 
+# Calculate Average Amount (This now works because amount is numeric)
 avg_amount = df[amount_col].mean() if amount_col else 0
 
+# Calculate High Risk
 high_risk_tx = 0
 if risk_col:
-    high_risk_tx = len(df[df[risk_col] == "HIGH"])
+    high_risk_tx = len(df[df[risk_col].str.upper() == "HIGH"])
 
 # =====================================================
 # KPI DISPLAY (POWERBI STYLE)
@@ -83,7 +99,7 @@ st.markdown("---")
 if date_col and fraud_col:
     st.subheader("📈 Fraud Trend Over Time")
 
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    # Grouping by date for the trend line
     trend_df = df.groupby(df[date_col].dt.date)[fraud_col].sum().reset_index()
 
     fig_trend = px.line(
@@ -92,6 +108,7 @@ if date_col and fraud_col:
         y=fraud_col,
         markers=True,
         title="Daily Fraud Count",
+        labels={fraud_col: "Number of Fraud Cases", date_col: "Date"}
     )
 
     fig_trend.update_layout(height=400)
