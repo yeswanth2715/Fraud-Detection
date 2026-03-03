@@ -1,127 +1,177 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.metrics import (
+    confusion_matrix,
+    classification_report,
+    roc_curve,
+    roc_auc_score,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
+    f1_score
+)
+import joblib
 import os
 
-st.set_page_config(page_title="Executive Overview", layout="wide")
+st.set_page_config(page_title="Model Performance", layout="wide")
 
-st.title("🏢 Fraud Intelligence Executive Dashboard")
+st.title("🧠 Goldilocks Model Performance")
 
 # =====================================================
-# LOAD DATA (SAFE FOR DEPLOYMENT)
+# LOAD DATA
 # =====================================================
 
 @st.cache_data
 def load_data():
     file_path = os.path.join("data", "User0_credit_card_transactions.csv")
     if not os.path.exists(file_path):
-        st.error("Dataset not found in data/ folder.")
+        st.error("Dataset not found.")
         st.stop()
     return pd.read_csv(file_path)
 
 df = load_data()
 
 # =====================================================
-# AUTO DETECT IMPORTANT COLUMNS
+# DETECT FRAUD COLUMN
 # =====================================================
 
-# Fraud column detection
-possible_fraud_cols = ["Is Fraud?", "is_fraud", "fraud", "Class", "target"]
-fraud_col = next((col for col in possible_fraud_cols if col in df.columns), None)
+possible_targets = ["Is Fraud?", "is_fraud", "fraud", "Class", "target"]
+target_col = next((col for col in possible_targets if col in df.columns), None)
 
-# Amount column detection
-possible_amount_cols = ["Amount", "amount", "transaction_amount"]
-amount_col = next((col for col in possible_amount_cols if col in df.columns), None)
+if target_col is None:
+    st.error("Fraud target column not found.")
+    st.stop()
 
-# Date column detection
-possible_date_cols = ["Date", "date", "timestamp", "transaction_date"]
-date_col = next((col for col in possible_date_cols if col in df.columns), None)
+# Convert Yes/No if needed
+if df[target_col].dtype == object:
+    df[target_col] = df[target_col].map({"Yes": 1, "No": 0})
 
-# Risk column detection (optional)
-possible_risk_cols = ["risk_level", "Risk", "prediction"]
-risk_col = next((col for col in possible_risk_cols if col in df.columns), None)
-
-# Convert fraud column if Yes/No
-if fraud_col and df[fraud_col].dtype == object:
-    df[fraud_col] = df[fraud_col].map({"Yes": 1, "No": 0})
+X = df.drop(columns=[target_col])
+y = df[target_col]
 
 # =====================================================
-# KPI CALCULATIONS
+# LOAD MODEL
 # =====================================================
 
-total_tx = len(df)
+@st.cache_resource
+def load_model():
+    model_path = os.path.join("models", "model.joblib")
+    if not os.path.exists(model_path):
+        st.error("Model file not found.")
+        st.stop()
+    return joblib.load(model_path)
 
-fraud_tx = df[fraud_col].sum() if fraud_col else 0
-fraud_rate = (fraud_tx / total_tx) * 100 if fraud_col else 0
+model = load_model()
 
-avg_amount = df[amount_col].mean() if amount_col else 0
+if not hasattr(model, "predict_proba"):
+    st.error("Model does not support probability prediction.")
+    st.stop()
 
-high_risk_tx = 0
-if risk_col:
-    high_risk_tx = len(df[df[risk_col] == "HIGH"])
+y_prob = model.predict_proba(X)[:, 1]
 
 # =====================================================
-# KPI DISPLAY (POWERBI STYLE)
+# THRESHOLD SLIDER
 # =====================================================
 
-st.markdown("### Key Business Metrics")
+st.sidebar.header("Threshold Control")
 
-col1, col2, col3, col4, col5 = st.columns(5)
+threshold = st.sidebar.slider(
+    "Fraud Probability Threshold",
+    0.0, 1.0, 0.5, 0.01
+)
 
-col1.metric("Total Transactions", f"{total_tx:,}")
-col2.metric("Fraud Transactions", f"{int(fraud_tx):,}")
-col3.metric("Fraud Rate %", f"{fraud_rate:.2f}%")
-col4.metric("High Risk Transactions", f"{high_risk_tx:,}")
-col5.metric("Avg Transaction Amount", f"${avg_amount:,.2f}")
+y_pred = (y_prob >= threshold).astype(int)
+
+# =====================================================
+# METRICS
+# =====================================================
+
+precision = precision_score(y, y_pred)
+recall = recall_score(y, y_pred)
+f1 = f1_score(y, y_pred)
+roc_auc = roc_auc_score(y, y_prob)
+
+st.markdown("### Performance Metrics")
+
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric("Precision", f"{precision:.3f}")
+col2.metric("Recall", f"{recall:.3f}")
+col3.metric("F1 Score", f"{f1:.3f}")
+col4.metric("ROC-AUC", f"{roc_auc:.3f}")
 
 st.markdown("---")
 
 # =====================================================
-# FRAUD TREND OVER TIME
+# CONFUSION MATRIX HEATMAP
 # =====================================================
 
-if date_col and fraud_col:
-    st.subheader("📈 Fraud Trend Over Time")
+st.subheader("Confusion Matrix")
 
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-    trend_df = df.groupby(df[date_col].dt.date)[fraud_col].sum().reset_index()
+cm = confusion_matrix(y, y_pred)
 
-    fig_trend = px.line(
-        trend_df,
-        x=date_col,
-        y=fraud_col,
-        markers=True,
-        title="Daily Fraud Count",
-    )
+fig_cm = px.imshow(
+    cm,
+    text_auto=True,
+    labels=dict(x="Predicted", y="Actual"),
+    x=["Non-Fraud", "Fraud"],
+    y=["Non-Fraud", "Fraud"],
+    color_continuous_scale="Blues"
+)
 
-    fig_trend.update_layout(height=400)
-    st.plotly_chart(fig_trend, use_container_width=True)
+st.plotly_chart(fig_cm, use_container_width=True)
 
 # =====================================================
-# RISK DISTRIBUTION
+# ROC CURVE
 # =====================================================
 
-if risk_col:
-    st.subheader("🍩 Risk Level Distribution")
+st.subheader("ROC Curve")
 
-    risk_counts = df[risk_col].value_counts().reset_index()
-    risk_counts.columns = ["Risk Level", "Count"]
+fpr, tpr, _ = roc_curve(y, y_prob)
 
-    fig_risk = px.pie(
-        risk_counts,
-        names="Risk Level",
-        values="Count",
-        hole=0.5,
-        color="Risk Level",
-        color_discrete_map={
-            "LOW": "#2ca02c",
-            "MEDIUM": "#ff7f0e",
-            "HIGH": "#d62728"
-        }
-    )
+fig_roc = go.Figure()
+fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name="Model"))
+fig_roc.add_trace(go.Scatter(
+    x=[0,1], y=[0,1],
+    mode="lines",
+    name="Random",
+    line=dict(dash="dash")
+))
 
-    fig_risk.update_layout(height=400)
-    st.plotly_chart(fig_risk, use_container_width=True)
+fig_roc.update_layout(
+    xaxis_title="False Positive Rate",
+    yaxis_title="True Positive Rate",
+    height=400
+)
+
+st.plotly_chart(fig_roc, use_container_width=True)
+
+# =====================================================
+# PRECISION-RECALL CURVE
+# =====================================================
+
+st.subheader("Precision-Recall Curve")
+
+precision_vals, recall_vals, _ = precision_recall_curve(y, y_prob)
+
+fig_pr = go.Figure()
+fig_pr.add_trace(go.Scatter(
+    x=recall_vals,
+    y=precision_vals,
+    mode="lines",
+    name="PR Curve"
+))
+
+fig_pr.update_layout(
+    xaxis_title="Recall",
+    yaxis_title="Precision",
+    height=400
+)
+
+st.plotly_chart(fig_pr, use_container_width=True)
 
 st.markdown("---")
-st.success("Executive view showing high-level fraud intelligence metrics.")
+st.success("Goldilocks model evaluation complete.")

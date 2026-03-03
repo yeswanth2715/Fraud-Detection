@@ -1,113 +1,127 @@
-import sys
-import os
-sys.path.append(os.path.abspath("."))
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import requests
+import os
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
+st.set_page_config(page_title="Executive Overview", layout="wide")
 
-DATA_PATH = os.path.join(PROJECT_ROOT, "data/User0_credit_card_transactions.csv")
+st.title("🏢 Fraud Intelligence Executive Dashboard")
 
-st.set_page_config(layout="wide")
-st.title("📊 Fraud Monitoring Dashboard")
+# =====================================================
+# LOAD DATA (SAFE FOR DEPLOYMENT)
+# =====================================================
 
-df = pd.read_csv(DATA_PATH)
+@st.cache_data
+def load_data():
+    file_path = os.path.join("data", "User0_credit_card_transactions.csv")
+    if not os.path.exists(file_path):
+        st.error("Dataset not found in data/ folder.")
+        st.stop()
+    return pd.read_csv(file_path)
 
-# ------------------------
-# Sidebar Filters
-# ------------------------
+df = load_data()
 
-st.sidebar.header("Filters")
-risk_filter = st.sidebar.multiselect(
-    "Risk Level",
-    df["risk_level"].unique(),
-    default=df["risk_level"].unique()
-)
+# =====================================================
+# AUTO DETECT IMPORTANT COLUMNS
+# =====================================================
 
-df = df[df["risk_level"].isin(risk_filter)]
+# Fraud column detection
+possible_fraud_cols = ["Is Fraud?", "is_fraud", "fraud", "Class", "target"]
+fraud_col = next((col for col in possible_fraud_cols if col in df.columns), None)
 
-# ------------------------
-# KPI Cards
-# ------------------------
+# Amount column detection
+possible_amount_cols = ["Amount", "amount", "transaction_amount"]
+amount_col = next((col for col in possible_amount_cols if col in df.columns), None)
 
-total = len(df)
-high = len(df[df["risk_level"] == "HIGH"])
-medium = len(df[df["risk_level"] == "MEDIUM"])
-low = len(df[df["risk_level"] == "LOW"])
-fraud_rate = (high / total) * 100 if total > 0 else 0
+# Date column detection
+possible_date_cols = ["Date", "date", "timestamp", "transaction_date"]
+date_col = next((col for col in possible_date_cols if col in df.columns), None)
 
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Total Transactions", f"{total:,}")
-c2.metric("High Risk", f"{high:,}")
-c3.metric("Medium Risk", f"{medium:,}")
-c4.metric("Low Risk", f"{low:,}")
-c5.metric("Fraud Rate %", f"{fraud_rate:.2f}%")
+# Risk column detection (optional)
+possible_risk_cols = ["risk_level", "Risk", "prediction"]
+risk_col = next((col for col in possible_risk_cols if col in df.columns), None)
 
-st.divider()
+# Convert fraud column if Yes/No
+if fraud_col and df[fraud_col].dtype == object:
+    df[fraud_col] = df[fraud_col].map({"Yes": 1, "No": 0})
 
-# ------------------------
-# Risk Distribution
-# ------------------------
+# =====================================================
+# KPI CALCULATIONS
+# =====================================================
 
-risk_counts = df["risk_level"].value_counts().reset_index()
-risk_counts.columns = ["Risk Level", "Transaction Count"]
+total_tx = len(df)
 
-fig = px.pie(
-    risk_counts,
-    names="Risk Level",
-    values="Transaction Count",
-    title="Risk Distribution"
-)
+fraud_tx = df[fraud_col].sum() if fraud_col else 0
+fraud_rate = (fraud_tx / total_tx) * 100 if fraud_col else 0
 
-st.plotly_chart(fig, use_container_width=True)
+avg_amount = df[amount_col].mean() if amount_col else 0
 
-# ------------------------
-# Anomaly Time Series
-# ------------------------
+high_risk_tx = 0
+if risk_col:
+    high_risk_tx = len(df[df[risk_col] == "HIGH"])
 
-st.subheader("📈 High Risk Trend")
+# =====================================================
+# KPI DISPLAY (POWERBI STYLE)
+# =====================================================
 
-trend = (
-    df.groupby("transaction_date")["risk_level"]
-    .apply(lambda x: (x == "HIGH").sum())
-    .reset_index(name="High Risk Count")
-)
+st.markdown("### Key Business Metrics")
 
-fig2 = px.line(
-    trend,
-    x="transaction_date",
-    y="High Risk Count",
-    title="High Risk Transactions Over Time"
-)
+col1, col2, col3, col4, col5 = st.columns(5)
 
-st.plotly_chart(fig2, use_container_width=True)
+col1.metric("Total Transactions", f"{total_tx:,}")
+col2.metric("Fraud Transactions", f"{int(fraud_tx):,}")
+col3.metric("Fraud Rate %", f"{fraud_rate:.2f}%")
+col4.metric("High Risk Transactions", f"{high_risk_tx:,}")
+col5.metric("Avg Transaction Amount", f"${avg_amount:,.2f}")
 
-# ------------------------
-# Top Merchants
-# ------------------------
+st.markdown("---")
 
-st.subheader("🏪 Top High Risk Merchants")
+# =====================================================
+# FRAUD TREND OVER TIME
+# =====================================================
 
-top_merchants = (
-    df[df["risk_level"] == "HIGH"]
-    .groupby("merchant_name")
-    .size()
-    .reset_index(name="High Risk Transactions")
-    .sort_values("High Risk Transactions", ascending=False)
-    .head(10)
-)
+if date_col and fraud_col:
+    st.subheader("📈 Fraud Trend Over Time")
 
-fig3 = px.bar(
-    top_merchants,
-    x="High Risk Transactions",
-    y="merchant_name",
-    orientation="h"
-)
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    trend_df = df.groupby(df[date_col].dt.date)[fraud_col].sum().reset_index()
 
-st.plotly_chart(fig3, use_container_width=True)
+    fig_trend = px.line(
+        trend_df,
+        x=date_col,
+        y=fraud_col,
+        markers=True,
+        title="Daily Fraud Count",
+    )
 
-st.dataframe(df, use_container_width=True)
+    fig_trend.update_layout(height=400)
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+# =====================================================
+# RISK DISTRIBUTION
+# =====================================================
+
+if risk_col:
+    st.subheader("🍩 Risk Level Distribution")
+
+    risk_counts = df[risk_col].value_counts().reset_index()
+    risk_counts.columns = ["Risk Level", "Count"]
+
+    fig_risk = px.pie(
+        risk_counts,
+        names="Risk Level",
+        values="Count",
+        hole=0.5,
+        color="Risk Level",
+        color_discrete_map={
+            "LOW": "#2ca02c",
+            "MEDIUM": "#ff7f0e",
+            "HIGH": "#d62728"
+        }
+    )
+
+    fig_risk.update_layout(height=400)
+    st.plotly_chart(fig_risk, use_container_width=True)
+
+st.markdown("---")
+st.success("Executive view showing high-level fraud intelligence metrics.")
