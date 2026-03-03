@@ -6,94 +6,98 @@ import plotly.graph_objects as go
 import json
 import os
 
-# --- Page Config ---
-st.set_page_config(page_title="Fraud Intelligence Command Center", layout="wide")
+# --- Page Config & Styling ---
+st.set_page_config(page_title="Fraud Command Center", layout="wide")
 
-##Dashboard for monitoring fraud patterns and model performance in real-time. Pulls in pre-calculated metrics and transaction data to provide actionable insights.
 st.markdown("""
     <style>
-    [data-testid="stMetricValue"] { font-size: 28px; color: #0078D4; }
-    .main { background-color: #f0f2f6; }
-    div.stButton > button { width: 100%; background-color: #0078D4; color: white; }
-    .plot-container { border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    [data-testid="stMetricValue"] { font-size: 32px; color: #0078D4; font-weight: bold; }
+    .main { background-color: #f8f9fa; }
+    div.stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #e0e0e0; }
     </style>
     """, unsafe_allow_html=True)
 
 @st.cache_data
-def load_all_data():
-    # Load Main Data
+def load_all_assets():
+    # 1. Load Transaction Data
     df = pd.read_csv(os.path.join("data", "User0_credit_card_transactions.csv"))
-    df['Amount'] = df['Amount'].replace(r'[\$,]', '', regex=True).astype(float)
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    df['Is Fraud?'] = df['Is Fraud?'].map({"Yes": 1, "No": 0})
     
-    # Load Model Metrics
+    # 2. Robust Column Detection (Fixes KeyError)
+    date_col = next((c for c in ["Date", "date", "timestamp"] if c in df.columns), None)
+    target_col = next((c for c in ["Is Fraud?", "is_fraud", "Class"] if c in df.columns), None)
+    amt_col = next((c for c in ["Amount", "amount"] if c in df.columns), None)
+    
+    # Data Cleaning
+    if amt_col:
+        df[amt_col] = df[amt_col].replace(r'[\$,]', '', regex=True).astype(float)
+    if date_col:
+        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    if target_col and df[target_col].dtype == object:
+        df[target_col] = df[target_col].map({"Yes": 1, "No": 0})
+    
+    # 3. Load Metrics (Fixes Probability Error)
     with open(os.path.join("metrics", "metrics.json"), "r") as f:
         metrics = json.load(f)
     
-    return df, metrics
+    return df, metrics, date_col, target_col, amt_col
 
-df, metrics = load_all_data()
+df, metrics, date_col, target_col, amt_col = load_all_assets()
 
-# --- Header Section ---
+# --- Dashboard Header ---
 st.title("🏢 Fraud Intelligence Command Center")
-st.markdown("Real-time Model Performance & Transaction Analysis")
-st.divider()
+st.markdown("Power BI-Style Performance & Operational Overview")
 
-# --- Top Row: KPIs (The Scorecard) ---
+# --- Row 1: KPI Scorecards ---
 col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total Transactions", f"{len(df):,}")
-col2.metric("Fraud Detected", f"{int(df['Is Fraud?'].sum()):,}")
-col3.metric("Model ROC-AUC", f"{metrics['roc_auc']:.3f}") # From metrics.json
-col4.metric("Avg Transaction", f"${df['Amount'].mean():.2f}")
-col5.metric("Optimal Threshold", f"{metrics['best_threshold']:.3f}") # From metrics.json
+with col1: st.metric("Total Transactions", f"{len(df):,}")
+with col2: st.metric("Detected Fraud", f"{int(df[target_col].sum()):,}")
+with col3: st.metric("Model ROC-AUC", f"{metrics['roc_auc']:.3f}")
+with col4: st.metric("F1 Score", f"{metrics['f1_score']:.3f}")
+with col5: st.metric("Avg Amount", f"${df[amt_col].mean():.2f}")
 
 st.divider()
 
-# --- Middle Row: Trends and Distribution ---
-row2_left, row2_right = st.columns([2, 1])
+# --- Row 2: Trend & Distribution ---
+left_chart, right_chart = st.columns([2, 1])
 
-with row2_left:
+with left_chart:
     st.subheader("📈 Fraud & Volume Trend")
-    # Stacked Area Chart (Volume vs Fraud)
-    df['Day'] = df['Date'].dt.date
-    daily_stats = df.groupby('Day').agg({'Amount': 'count', 'Is Fraud?': 'sum'}).reset_index()
-    daily_stats.columns = ['Date', 'Total Volume', 'Fraud Cases']
+    # Aggregating daily data
+    daily = df.groupby(df[date_col].dt.date).agg({amt_col: 'count', target_col: 'sum'}).reset_index()
+    daily.columns = ['Date', 'Volume', 'Fraud']
     
-    fig_trend = px.area(daily_stats, x='Date', y=['Total Volume', 'Fraud Cases'],
-                        title="Transaction Volume vs. Fraud Frequency",
+    fig_trend = px.area(daily, x='Date', y=['Volume', 'Fraud'], 
                         color_discrete_sequence=['#0078D4', '#D13438'],
-                        template="plotly_white")
+                        title="Daily Transaction Activity vs Fraud Detection")
     st.plotly_chart(fig_trend, use_container_width=True)
 
-with row2_right:
-    st.subheader("🍩 Risk Distribution")
-    # Using 'Use Chip' or 'Merchant State' as a proxy for categorical analysis
-    top_states = df['Merchant State'].value_counts().head(5)
-    fig_pie = px.pie(values=top_states.values, names=top_states.index, hole=0.6,
-                     color_discrete_sequence=px.colors.sequential.RdBu)
-    fig_pie.update_layout(showlegend=False)
+with right_chart:
+    st.subheader("🍩 Merchant Risk")
+    # Top merchants by transaction count
+    top_merch = df['Merchant Name'].value_counts().head(5)
+    fig_pie = px.pie(values=top_merch.values, names=top_merch.index, hole=0.5,
+                     title="Top 5 Merchant Volume",
+                     color_discrete_sequence=px.colors.qualitative.Pastel)
     st.plotly_chart(fig_pie, use_container_width=True)
 
-# --- Bottom Row: Model Health & Matrix ---
-row3_left, row3_right = st.columns(2)
+# --- Row 3: Model Health ---
+matrix_col, hist_col = st.columns(2)
 
-with row3_left:
-    st.subheader("📊 Confusion Matrix (Model Accuracy)")
+with matrix_col:
+    st.subheader("📊 Confusion Matrix")
     cm = np.array(metrics['confusion_matrix'])
-    fig_cm = px.imshow(cm, text_auto=True, 
-                       x=['Predicted Safe', 'Predicted Fraud'],
-                       y=['Actual Safe', 'Actual Fraud'],
-                       color_continuous_scale='Blues')
+    fig_cm = px.imshow(cm, text_auto=True,
+                       x=['Safe', 'Fraud'], y=['Safe', 'Fraud'],
+                       labels=dict(x="Predicted", y="Actual"),
+                       color_continuous_scale="Blues")
     st.plotly_chart(fig_cm, use_container_width=True)
 
-with row3_right:
-    st.subheader("📉 Prediction Confidence")
-    # Histogram of amounts filtered by fraud status (Stacked Bar effect)
-    fig_hist = px.histogram(df, x="Amount", color="Is Fraud?", 
-                            nbins=50, barmode="stack",
-                            title="Transaction Value Distribution by Class",
-                            color_discrete_map={0: "#0078D4", 1: "#D13438"})
+with hist_col:
+    st.subheader("💵 Value Distribution")
+    fig_hist = px.histogram(df, x=amt_col, color=target_col, 
+                            nbins=40, barmode='stack',
+                            color_discrete_map={0: "#0078D4", 1: "#D13438"},
+                            title="Transaction Amounts by Class")
     st.plotly_chart(fig_hist, use_container_width=True)
 
-st.success(f"Dashboard Model v1.0 (Threshold: {metrics['best_threshold']:.4f})")
+st.success(f"Dashboard model v1.0. Optimal Threshold: {metrics['best_threshold']:.4f}")
